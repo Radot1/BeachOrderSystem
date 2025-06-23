@@ -107,19 +107,17 @@ def save_menu_data(menu_data):
     tree.write(MENU_FILE, encoding='utf-8', xml_declaration=True)
 
 def log_order_to_csv(order_data):
-    # Create directory if it doesn't exist
     logs_dir = Path("order_logs")
     logs_dir.mkdir(exist_ok=True)
     
-    # Daily CSV filename (e.g., "orders_2023-08-15.csv")
     today = datetime.now().strftime("%Y-%m-%d")
     csv_file = logs_dir / f"orders_{today}.csv"
     
-    # CSV headers
     fieldnames = ["timestamp", "seat", "item_name", "quantity", "price", "payment_method"]
     
     # Write the order items to CSV
     file_exists = csv_file.exists()
+    payment_method = "CARD" if order_data.get('payByCard') else "CASH"
     
     with open(csv_file, mode='a', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -127,6 +125,7 @@ def log_order_to_csv(order_data):
         if not file_exists:
             writer.writeheader()
         
+        # Write order items
         for item in order_data['items']:
             writer.writerow({
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -136,45 +135,41 @@ def log_order_to_csv(order_data):
                 "price": item['price'],
                 "payment_method": ""  # Items don't have payment method
             })
+        
+        # Write order total
+        writer.writerow({
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "seat": order_data['seat'],
+            "item_name": "ORDER TOTAL",
+            "quantity": "",
+            "price": order_data['total'],
+            "payment_method": payment_method
+        })
 
-    # Calculate daily totals for cash and card
+    # Calculate daily totals from ALL orders in the file
     daily_cash_total = 0
     daily_card_total = 0
+    
     if csv_file.exists():
         with open(csv_file, mode='r', newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
-                # Only sum rows that are actual items
-                if row['item_name'] and row['item_name'] not in ['ORDER TOTAL', 'DAILY TOTAL', 'CASH TOTAL', 'CARD TOTAL']:
+                if row['item_name'] == 'ORDER TOTAL':
                     try:
-                        item_total = float(row['price']) * int(row['quantity'])
-                        # Check payment method for order total rows
+                        amount = float(row['price'])
                         if row['payment_method'] == 'CASH':
-                            daily_cash_total += item_total
+                            daily_cash_total += amount
                         elif row['payment_method'] == 'CARD':
-                            daily_card_total += item_total
+                            daily_card_total += amount
                     except (ValueError, TypeError):
                         pass
-
-    # Append the order total with payment method
-    payment_method = "CARD" if order_data.get('payByCard') else "CASH"
+    
+    # Append daily totals at the end of the file
     with open(csv_file, mode='a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
-        # Write the current order total
-        writer.writerow([
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            order_data['seat'],
-            "ORDER TOTAL",
-            "",  # Empty quantity field
-            order_data['total'],
-            payment_method
-        ])
-        
-        # Write the daily totals
-        if order_data['items']:
-            writer.writerow(["", "", "CASH TOTAL", "", round(daily_cash_total, 2), ""])
-            writer.writerow(["", "", "CARD TOTAL", "", round(daily_card_total, 2), ""])
-            writer.writerow(["", "", "DAILY TOTAL", "", round(daily_cash_total + daily_card_total, 2), ""])
+        writer.writerow(["", "", "CASH TOTAL", "", round(daily_cash_total, 2), ""])
+        writer.writerow(["", "", "CARD TOTAL", "", round(daily_card_total, 2), ""])
+        writer.writerow(["", "", "DAILY TOTAL", "", round(daily_cash_total + daily_card_total, 2), ""])
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
@@ -249,6 +244,65 @@ HTML_TEMPLATE = '''
             background-color: #3b82f6;
             color: white;
         }
+            /* Mobile Order Panel Styles */
+    @media (max-width: 1023px) {
+        #seat-map {
+            grid-template-columns: repeat(8, minmax(60px, 1fr));
+            overflow-x: auto;
+            padding-bottom: 8px;
+        }
+        
+        .order-panel-mobile {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            max-height: 60vh;
+            border-radius: 1rem 1rem 0 0;
+            box-shadow: 0 -4px 12px rgba(0,0,0,0.1);
+            z-index: 50;
+            transform: translateY(100%);
+            transition: transform 0.3s ease;
+        }
+        
+        .order-panel-mobile.active {
+            transform: translateY(0);
+        }
+        
+        .order-panel-backdrop {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.3);
+            z-index: 40;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+        
+        .order-panel-backdrop.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+    }
+
+    /* Better text handling */
+    .order-item {
+        word-break: break-word;
+        line-height: 1.4;
+    }
+
+    /* Improved spacing */
+    .category-content {
+        gap: 0.75rem;
+    }
+
+    .menu-item {
+        padding: 1rem;
+        border-radius: 0.75rem;
+    }
     </style>
     <script>
         // Global variables
@@ -380,6 +434,7 @@ HTML_TEMPLATE = '''
             if (window.innerWidth < 1024 && !orderPanelOpen) {
                 toggleOrderPanel();
             }
+            
         }
 
         function updateOrderDisplay() {
@@ -915,6 +970,17 @@ HTML_TEMPLATE = '''
             renderCategoryTabs();
             renderMenu();
             
+            // Create and add the floating action button
+            const fab = document.createElement('button');
+            fab.id = 'fab-order-toggle';
+            fab.className = 'fixed bottom-4 right-4 bg-blue-500 text-white p-4 rounded-full shadow-lg z-30 lg:hidden flex items-center justify-center';
+            fab.innerHTML = '<i class="fas fa-receipt text-xl"></i>';
+            fab.onclick = toggleOrderPanel;
+            document.body.appendChild(fab);
+            
+            // Make sure the button stays on top of other elements
+            fab.style.zIndex = '9999';
+            
             if (window.innerWidth < 1024) {
                 const toggleBtn = document.createElement('button');
                 toggleBtn.className = 'fixed bottom-4 right-4 bg-blue-500 text-white p-3 rounded-full shadow-lg z-30 lg:hidden';
@@ -1063,6 +1129,54 @@ HTML_TEMPLATE = '''
             </div>
         </div>
     </div>
+    <!-- Mobile Order Panel Backdrop -->
+    <div id="order-panel-backdrop" class="order-panel-backdrop lg:hidden" onclick="toggleOrderPanel()"></div>
+
+    <!-- Mobile Order Panel -->
+    <div id="order-panel-mobile" class="order-panel-mobile lg:hidden bg-white p-4 overflow-y-auto">
+        <div class="flex justify-between items-center mb-3">
+            <h3 class="text-sm font-semibold text-blue-800">
+                <i class="fas fa-receipt mr-2"></i>Your Order
+            </h3>
+            <button onclick="toggleOrderPanel()" class="text-gray-500 hover:text-gray-700 text-sm">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        
+        <div id="mobile-order-items" class="flex-1 overflow-y-auto space-y-2 pr-2 mb-4">
+            <p class="text-blue-500 text-center py-4 text-sm">No items added yet</p>
+        </div>
+        
+        <div class="mt-2 flex justify-between items-center bg-blue-100 px-3 py-2 rounded-lg mb-4">
+            <span class="font-medium text-blue-800 text-sm flex items-center">
+                <i class="fas fa-coins mr-1"></i> Total:
+            </span>
+            <span id="mobile-order-total" class="font-bold text-blue-700 text-sm">€0</span>
+        </div>
+
+        <!-- Order Notes -->
+        <div class="mb-2">
+            <label for="mobile-order-notes" class="block text-xs font-medium text-blue-700 mb-1 flex items-center">
+                <i class="fas fa-sticky-note mr-1"></i> Special Instructions
+            </label>
+            <textarea id="mobile-order-notes" rows="2" class="w-full px-3 py-2 border border-blue-200 rounded-lg focus:ring-1 focus:ring-blue-300 focus:border-blue-300 text-sm" placeholder="Allergies? Modifications?"></textarea>
+        </div>
+
+        <!-- Card Payment Checkbox -->
+        <div class="flex items-center justify-center my-3">
+            <input id="mobile-pay-by-card" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+            <label for="mobile-pay-by-card" class="ml-2 block text-sm font-medium text-blue-800">
+                Pay by Card
+            </label>
+        </div>
+
+        <!-- Submit Button -->
+        <button onclick="submitOrder()" class="w-full py-3 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-medium rounded-lg shadow-md transition disabled:opacity-50 disabled:cursor-not-allowed text-sm">
+            <i class="fas fa-paper-plane mr-1"></i> Send Order
+        </button>
+    </div>
+</div>
+
 </body>
 </html>
 '''
